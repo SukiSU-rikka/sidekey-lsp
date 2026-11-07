@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="侧边快捷键 单击/双击/长按 自定义，可拦截系统原功能" />
+        <meta-data android:name="xposedminversion" android:value="93" />
+        <meta-data android:name="xposedsharedprefs" android:value="true" />
+        <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
+
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 只有系统(持有 DEVICE_POWER)能发：用来以 root 执行 Shell 动作 -->
+        <receiver android:name=".CmdReceiver"
+            android:exported="true"
+            android:permission="android.permission.DEVICE_POWER">
+            <intent-filter>
+                <action android:name="com.sidekey.lsp.RUN_SHELL" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
