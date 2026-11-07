@@ -7,6 +7,11 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ResolveInfo;
+import android.content.pm.ServiceInfo;
+import android.media.browse.MediaBrowser;
+import android.service.media.MediaBrowserService;
+import android.os.Handler;
+import android.os.Looper;
 import android.media.AudioManager;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -92,8 +97,10 @@ final class Actions {
                     return;
                 }
             }
-            // 目标播放器没在跑：给它的媒体按键接收器发一个真实的按键，后台拉起播放
-            if (!cmd.equals("pause")) mediaButtonTo(c, target, KeyEvent.KEYCODE_MEDIA_PLAY);
+            // 目标播放器没在跑：和控制中心的「继续播放」一样，连它的 MediaBrowserService 拿会话再 play，
+            // 全程不启动 Activity；没有 MediaBrowserService 的播放器才退回媒体按键广播
+            if (cmd.equals("pause")) return;
+            if (!resumeViaBrowser(c, target, cmd)) mediaButtonTo(c, target, KeyEvent.KEYCODE_MEDIA_PLAY);
             return;
         }
         // 没指定：发给系统当前的媒体按键会话（和耳机线控一样）
@@ -123,6 +130,46 @@ final class Actions {
                 if (st != null && st.getState() == PlaybackState.STATE_PLAYING) tc.pause();
                 else tc.play();
         }
+    }
+
+    private static boolean resumeViaBrowser(Context c, String pkg, String cmd) {
+        Intent q = new Intent(MediaBrowserService.SERVICE_INTERFACE).setPackage(pkg);
+        List<ResolveInfo> rs = c.getPackageManager().queryIntentServices(q, 0);
+        if (rs == null || rs.isEmpty()) return false;
+        ServiceInfo si = rs.get(0).serviceInfo;
+        ComponentName cn = new ComponentName(si.packageName, si.name);
+
+        Bundle hints = new Bundle();
+        hints.putBoolean(MediaBrowserService.BrowserRoot.EXTRA_RECENT, true);
+        Looper looper = Looper.myLooper() != null ? Looper.myLooper() : Looper.getMainLooper();
+        Handler h = new Handler(looper);
+        final MediaBrowser[] holder = new MediaBrowser[1];
+        holder[0] = new MediaBrowser(c, cn, new MediaBrowser.ConnectionCallback() {
+            @Override
+            public void onConnected() {
+                MediaBrowser b = holder[0];
+                try {
+                    MediaController mc = new MediaController(c, b.getSessionToken());
+                    MediaController.TransportControls tc = mc.getTransportControls();
+                    switch (cmd) {
+                        case "next": tc.skipToNext(); break;
+                        case "previous": tc.skipToPrevious(); break;
+                        default: tc.play();
+                    }
+                } catch (Throwable t) {
+                    SideKeyModule.logE("browser play", t);
+                }
+                // 播放器开始播放后会自己起前台服务，稍后断开即可
+                h.postDelayed(() -> { try { b.disconnect(); } catch (Throwable ignored) {} }, 15_000);
+            }
+
+            @Override
+            public void onConnectionFailed() {
+                mediaButtonTo(c, pkg, KeyEvent.KEYCODE_MEDIA_PLAY);
+            }
+        }, hints);
+        holder[0].connect();
+        return true;
     }
 
     private static void mediaButtonTo(Context c, String pkg, int code) {
