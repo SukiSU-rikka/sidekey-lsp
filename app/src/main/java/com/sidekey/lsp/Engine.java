@@ -1,80 +1,82 @@
 package com.sidekey.lsp;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.KeyEvent;
 
-import de.robv.android.xposed.XSharedPreferences;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
-
-/** 单击 / 双击 / 长按 判定，全部在自己的线程里跑，不阻塞输入线程 */
+/** 单击 / 双击 / 长按 判定，在自己的线程里跑，不阻塞输入线程 */
 final class Engine {
-    private static Engine sInstance;
+    private static volatile Engine sInstance;
 
-    static synchronized Engine get() {
-        if (sInstance == null) sInstance = new Engine();
-        return sInstance;
+    static Engine get() {
+        Engine e = sInstance;
+        if (e != null) return e;
+        synchronized (Engine.class) {
+            if (sInstance == null) {
+                SideKeyModule m = SideKeyModule.sInstance;
+                if (m == null) return null;
+                try {
+                    sInstance = new Engine(m.getRemotePreferences(Cfg.PREFS));
+                } catch (Throwable t) {
+                    SideKeyModule.logE("engine init", t);
+                    return null;
+                }
+            }
+            return sInstance;
+        }
     }
 
-    private final XSharedPreferences prefs = new XSharedPreferences(Cfg.PKG, Cfg.PREFS);
+    private final SharedPreferences prefs;
     private final Handler h;
-
-    private volatile int scanCode = Cfg.DEF_SCANCODE;
-    private volatile boolean swallow = true;
-    private volatile long lastCheck;
+    private volatile int scanCode;
+    private volatile boolean swallow;
+    // 远程配置的变更监听，必须强引用持有
+    private final SharedPreferences.OnSharedPreferenceChangeListener listener = (sp, key) -> refresh();
 
     private int clicks;
     private boolean longFired;
     private boolean downNow;
+    private Context context;
 
     private final Runnable singleR = () -> { clicks = 0; fire("single"); };
     private final Runnable longR = () -> { longFired = true; fire("long"); };
 
-    private Engine() {
+    private Engine(SharedPreferences prefs) {
+        this.prefs = prefs;
         HandlerThread t = new HandlerThread("SideKey");
         t.start();
         h = new Handler(t.getLooper());
-        reload(true);
+        refresh();
+        prefs.registerOnSharedPreferenceChangeListener(listener);
     }
 
-    /** 输入线程上调用：只做一次 stat（节流 1.5s）和整数比较 */
-    boolean matches(KeyEvent ev) {
-        long now = SystemClock.uptimeMillis();
-        if (now - lastCheck > 1500) { lastCheck = now; reload(false); }
-        return ev.getScanCode() == scanCode;
+    private void refresh() {
+        scanCode = prefs.getInt(Cfg.SCANCODE, Cfg.DEF_SCANCODE);
+        swallow = prefs.getBoolean(Cfg.SWALLOW, true);
     }
+
+    boolean matches(KeyEvent ev) { return ev.getScanCode() == scanCode; }
 
     boolean swallow() { return swallow; }
 
-    private void reload(boolean force) {
-        try {
-            if (force || prefs.hasFileChanged()) {
-                prefs.reload();
-                scanCode = prefs.getInt(Cfg.SCANCODE, Cfg.DEF_SCANCODE);
-                swallow = prefs.getBoolean(Cfg.SWALLOW, true);
-            }
-        } catch (Throwable t) {
-            XposedBridge.log("[SideKey] prefs: " + t);
-        }
-    }
-
     void onKey(KeyEvent ev) {
-        int action = ev.getAction();
-        if (action == KeyEvent.ACTION_DOWN) {
+        int a = ev.getAction();
+        if (a == KeyEvent.ACTION_DOWN) {
             if (ev.getRepeatCount() > 0) return;
             h.post(this::down);
-        } else if (action == KeyEvent.ACTION_UP) {
+        } else if (a == KeyEvent.ACTION_UP) {
             h.post(this::up);
         }
     }
 
+    private String act(String g) { return prefs.getString(Cfg.ACT_PREFIX + g, ""); }
+
     private boolean has(String g) {
-        String a = prefs.getString(Cfg.ACT_PREFIX + g, "");
+        String a = act(g);
         return a != null && !a.isEmpty() && !"none".equals(a);
     }
 
@@ -99,14 +101,13 @@ final class Engine {
 
     private void fire(String gesture) {
         try {
+            if (!has(gesture)) return;
             Context c = ctx();
             if (c == null) return;
-            String spec = prefs.getString(Cfg.ACT_PREFIX + gesture, "");
-            if (spec == null || spec.isEmpty() || "none".equals(spec)) return;
             if (prefs.getBoolean(Cfg.HAPTIC, true)) buzz(c);
-            Actions.run(c, spec, prefs.getString(Cfg.MEDIA_TARGET, ""));
+            Actions.run(c, act(gesture), prefs.getString(Cfg.MEDIA_TARGET, ""));
         } catch (Throwable t) {
-            XposedBridge.log("[SideKey] fire " + gesture + ": " + t);
+            SideKeyModule.logE("fire " + gesture, t);
         }
     }
 
@@ -117,16 +118,14 @@ final class Engine {
         } catch (Throwable ignored) {}
     }
 
-    private Context context;
-
     private Context ctx() {
         if (context != null) return context;
         try {
-            Object at = XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.app.ActivityThread", null), "currentActivityThread");
-            context = (Context) XposedHelpers.callMethod(at, "getSystemContext");
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object thread = Refl.call(at, "currentActivityThread");
+            context = (Context) Refl.call(thread, "getSystemContext");
         } catch (Throwable t) {
-            XposedBridge.log("[SideKey] context: " + t);
+            SideKeyModule.logE("context", t);
         }
         return context;
     }

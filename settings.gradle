@@ -2,11 +2,7 @@ pluginManagement {
     repositories { google(); mavenCentral(); gradlePluginPortal() }
 }
 dependencyResolutionManagement {
-    repositories {
-        google()
-        mavenCentral()
-        maven { url "https://api.xposed.info/" }
-    }
+    repositories { google(); mavenCentral() }
 }
 rootProject.name = "SideKeyLSP"
 include ':app'

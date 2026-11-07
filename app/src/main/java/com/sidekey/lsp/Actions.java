@@ -14,6 +14,7 @@ import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.os.SystemClock;
@@ -24,8 +25,6 @@ import android.view.KeyEvent;
 
 import java.util.List;
 
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
 
 /** 在 system_server 里直接调系统 API 执行动作，不起 shell */
 final class Actions {
@@ -48,7 +47,7 @@ final class Actions {
             else if (spec.startsWith("key:")) injectKey(c, Integer.parseInt(spec.substring(4).trim()));
             else if (spec.startsWith("sh:")) shell(c, spec.substring(3));
         } catch (Throwable t) {
-            XposedBridge.log("[SideKey] action " + spec + ": " + t);
+            SideKeyModule.logE("action " + spec, t);
         } finally {
             Binder.restoreCallingIdentity(id);
         }
@@ -71,14 +70,14 @@ final class Actions {
 
     private static void startActivity(Context c, Intent i) {
         try {
-            XposedHelpers.callMethod(c, "startActivityAsUser", i, currentUser());
+            Refl.call(c, "startActivityAsUser", i, currentUser());
         } catch (Throwable t) {
             c.startActivity(i);
         }
     }
 
-    private static UserHandle currentUser() {
-        return (UserHandle) XposedHelpers.getStaticObjectField(UserHandle.class, "CURRENT");
+    private static UserHandle currentUser() throws Exception {
+        return (UserHandle) Refl.getStatic(UserHandle.class, "CURRENT");
     }
 
     // ---------- 媒体 ----------
@@ -130,7 +129,6 @@ final class Actions {
         Intent q = new Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(pkg);
         List<ResolveInfo> rs = c.getPackageManager().queryBroadcastReceivers(q, 0);
         if (rs == null || rs.isEmpty()) {
-            XposedBridge.log("[SideKey] " + pkg + " 没有媒体按键接收器");
             return;
         }
         ResolveInfo r = rs.get(0);
@@ -141,11 +139,8 @@ final class Actions {
             Intent i = new Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(cn)
                     .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
                     .putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(t, t, action, code, 0));
-            try {
-                XposedHelpers.callMethod(c, "sendBroadcastAsUser", i, currentUser(), null, opts);
-            } catch (Throwable e) {
-                c.sendBroadcast(i);
-            }
+            if (opts != null && Build.VERSION.SDK_INT >= 34) c.sendBroadcast(i, null, opts);
+            else c.sendBroadcast(i);
         }
     }
 
@@ -154,11 +149,11 @@ final class Actions {
         try {
             BroadcastOptions bo = BroadcastOptions.makeBasic();
             Class<?> pem = Class.forName("android.os.PowerExemptionManager");
-            int type = XposedHelpers.getStaticIntField(pem, "TEMPORARY_ALLOW_LIST_TYPE_FOREGROUND_SERVICE_ALLOWED");
+            int type = (Integer) Refl.getStatic(pem, "TEMPORARY_ALLOW_LIST_TYPE_FOREGROUND_SERVICE_ALLOWED");
             int reason;
-            try { reason = XposedHelpers.getStaticIntField(pem, "REASON_MEDIA_BUTTON"); }
+            try { reason = (Integer) Refl.getStatic(pem, "REASON_MEDIA_BUTTON"); }
             catch (Throwable e) { reason = 0; }
-            XposedHelpers.callMethod(bo, "setTemporaryAppAllowlist", 10_000L, type, reason, "sidekey");
+            Refl.call(bo, "setTemporaryAppAllowlist", 10_000L, type, reason, "sidekey");
             return bo.toBundle();
         } catch (Throwable t) {
             return null;
@@ -199,18 +194,18 @@ final class Actions {
         if (a.isEnabled()) a.disable(); else a.enable();
     }
 
-    private static void lock(Context c) {
+    private static void lock(Context c) throws Exception {
         PowerManager pm = c.getSystemService(PowerManager.class);
-        XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis());
+        Refl.call(pm, "goToSleep", SystemClock.uptimeMillis());
     }
 
-    private static void injectKey(Context c, int code) {
+    private static void injectKey(Context c, int code) throws Exception {
         Object im = c.getSystemService(Context.INPUT_SERVICE);
         long t = SystemClock.uptimeMillis();
         for (int action : new int[]{KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP}) {
             KeyEvent ev = new KeyEvent(t, t, action, code, 0, 0,
                     KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
-            XposedHelpers.callMethod(im, "injectInputEvent", ev, 0); // 0 = INJECT_INPUT_EVENT_MODE_ASYNC
+            Refl.call(im, "injectInputEvent", ev, 0); // 0 = INJECT_INPUT_EVENT_MODE_ASYNC
         }
     }
 
@@ -222,7 +217,7 @@ final class Actions {
                 .addFlags(Intent.FLAG_RECEIVER_FOREGROUND | Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 .putExtra("cmd", cmd);
         try {
-            XposedHelpers.callMethod(c, "sendBroadcastAsUser", i, currentUser());
+            c.sendBroadcastAsUser(i, currentUser());
         } catch (Throwable t) {
             c.sendBroadcast(i);
         }

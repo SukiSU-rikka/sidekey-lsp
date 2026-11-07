@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">快捷键增强</string>
+    <string name="xposed_desc">侧边快捷键 单击 / 双击 / 长按 自定义，可拦截系统原功能</string>
 </resources>
