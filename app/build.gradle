@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 
 android {
     namespace 'com.sidekey.lsp'
-    compileSdk 35
+    compileSdk 37
 
     defaultConfig {
         applicationId 'com.sidekey.lsp'
